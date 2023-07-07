@@ -1,0 +1,74 @@
+#Code for call report dashboard being able to filter by nurseID for Number of missed calls per nurse, Time Diff for call back, if call was missed. How many calls were missed, if no call back. Longest call duration per nurse and shortest call duration per nurse.
+import dash
+from dash import dcc
+from dash import html
+import pandas as pd
+
+# Import the DataFrame from your source (e.g., CSV file, database)
+sheet1_df = pd.read_excel('Call_reports3.xlsx', sheet_name ='Sheet1')
+sheet2_df = pd.read_excel('Call_reports3.xlsx', sheet_name = 'Sheet2')
+sheet3_df = pd.read_excel('Call_reports3.xlsx', sheet_name = 'Sheet3')
+
+combined_df = pd.concat([sheet1_df, sheet2_df, sheet3_df], ignore_index=True)
+print(combined_df[:5])
+
+# Function to calculate time difference
+def calculate_time_difference(row):
+    if pd.notnull(row['Missed_phn']) and row['To'] == row['Missed_phn'] and row['End_dt'] < row["Start_dt"]:
+        start_time = pd.to_datetime(row['Start_dt'])
+        end_time = pd.to_datetime(row['End_dt'])
+        time_diff = end_time - start_time
+        return time_diff.total_seconds() / 60  # Convert to minutes
+    else:
+        return None
+
+# Apply the calculation to a new column
+combined_df['TimeDifference'] = combined_df.apply(calculate_time_difference, axis=1)
+
+# Filter rows where conditions are met
+filtered_rows = combined_df[combined_df.apply(lambda row: pd.notnull(row['Missed_phn']) and row['To'] == row['Missed_phn'] and row['End_dt'] <= row['Start_dt'], axis=1)]
+
+# Create a new column for the time difference
+filtered_rows['Difference'] = filtered_rows['TimeDifference']
+
+# Print the filtered rows with the new column
+print(filtered_rows[['Missed_phn', 'To', 'Start_dt', 'End_dt', 'Difference']])
+
+
+#app building
+app = dash.Dash(__name__)
+
+app.layout = html.Div(
+    children=[
+        html.H1("Call Statistics"),
+        dcc.Dropdown(
+            id='nurse-dropdown',
+            options=[{'label': NurseID, 'value': NurseID} for NurseID in combined_df['NurseID'].unique()],
+            placeholder="Select a NurseID"
+        ),
+        html.Div(id='output-container')
+    ]
+)
+
+@app.callback(
+    dash.dependencies.Output('output-container', 'children'),
+    [dash.dependencies.Input('nurse-dropdown', 'value')]
+)
+def update_statistics(selected_nurse):
+    if selected_nurse:
+        filtered_df = df[df['NurseID'] == selected_nurse]
+        missed_calls_count = filtered_df['Miss_Rec'].eq('Missed_phn').sum()
+        callback_duration = filtered_df['TimeDifference'].sum()
+        longest_call_duration = filtered_df['duration'].max()
+        shortest_call_duration = filtered_df['duration'].min()
+        return html.Div([
+            html.Div(f"Number of Missed Calls for {selected_nurse}: {missed_calls_count}"),
+            html.Div(f"Total Call Back Duration for {selected_nurse}: {callback_duration}"),
+            html.Div(f"Longest Call Duration for {selected_nurse}: {longest_call_duration} seconds"),
+            html.Div(f"Shortest Call Duration for {selected_nurse}: {shortest_call_duration} seconds")
+        ])
+    else:
+        return html.Div()
+
+if __name__ == '__main__':
+    app.run_server(debug=True)
