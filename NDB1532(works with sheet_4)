@@ -1,0 +1,184 @@
+import re
+from datetime import datetime as dt
+import dash
+import numpy as np
+import pandas as pd
+from dash import dcc, html
+from dateutil import parser
+
+# Import the DataFrame from your source (e.g., CSV file, database)
+# sheet1_df = pd.read_excel('Call_reports4.xlsx', sheet_name='Sheet1')
+# sheet2_df = pd.read_excel('Call_reports4.xlsx', sheet_name='Sheet2')
+# sheet3_df = pd.read_excel('Call_reports4.xlsx', sheet_name='Sheet3')
+combined_df = pd.read_excel('Call_reports4.xlsx', sheet_name='Sheet4')
+
+# combined_df = pd.concat([sheet1_df, sheet2_df, sheet3_df], ignore_index=True)
+# print(combined_df[:5]) #Checks used within the code to monitor correct output
+
+# Null values dealt with
+combined_df['NurseID'].fillna('PAT', inplace=True)
+
+# parse time format
+combined_df['Start Time'] = combined_df['Start Time'].apply(parser.parse)
+combined_df['End Time'] = combined_df['End Time'].apply(parser.parse)
+
+combined_df['Start Time'] = pd.to_datetime(combined_df['Start Time'])
+combined_df['End Time'] = pd.to_datetime(combined_df['End Time'])
+
+
+# print(combined_df['Start Time'] [:5]) #Check used within the code to monitor output
+
+
+# Adding Missed_phn column Function
+def phone_number_missed(combined_df):
+    combined_df['Missed_phn'] = ""
+    condition = (combined_df['NurseID'] == 'PAT') & (combined_df['Duration'] < 1) & (
+            combined_df['Direction'] == 'INBOUND')
+    combined_df.loc[condition, 'Missed_phn'] = combined_df['From']
+    return combined_df
+
+
+# ADD Missed_phn to combined_df and return new comb_df1
+combined_df1 = phone_number_missed(combined_df)
+#print(combined_df1[1:30]) #Check used within the code to monitor output
+
+# Creation of MCB_dur and NCB
+# Assume 'combined_df1' is your DataFrame with columns 'Missed_phn', 'To', 'End Time', and 'MCB_dur'
+combined_df1['MCB_dur'] = ''
+combined_df1['NCB'] = ''
+
+
+def calculate_mcb_dur_and_ncb(df, missed_phn_col, to_col, start_time_col, end_time_col, mcb_dur_col, ncb_col):
+    # Iterate over each row in the DataFrame
+
+    for i, row in df.iterrows():
+        missed_phn = row[missed_phn_col]
+        end_time = pd.to_datetime(row[end_time_col])
+
+        if pd.notnull(missed_phn):
+            # Find the matching 'To' value in the rows below the current row
+            matching_rows = df.loc[i + 1:].loc[
+                df[to_col].astype(str).apply(lambda x: bool(re.search(r'\(\d+\)', x)) and x.endswith(missed_phn[-11:]))]
+
+            if not matching_rows.empty:
+                # Get the row index of the first match
+                match_index = matching_rows.index[0]
+
+                # Calculate the duration and assign it to MCB_dur column
+                start_time = pd.to_datetime(df.loc[match_index, start_time_col])
+                if pd.notnull(start_time) and pd.notnull(end_time):
+                    duration = abs(start_time - end_time)
+                    df.at[match_index, mcb_dur_col] = duration.total_seconds()
+
+            else:
+                df.at[i, ncb_col] = 1
+
+
+# replace data in MCB_dur with np.nan so that we can remove the 1 in the NCB col associated with MCB_dur col
+
+combined_df1['MCB_dur'].replace("", np.nan, inplace=True)
+# function to remove unnecessary '1' in NCB col
+calculate_mcb_dur_and_ncb(combined_df1, 'Missed_phn', 'To', 'Start Time', 'End Time', 'MCB_dur', 'NCB')
+for i, row in combined_df1.iterrows():
+    missed_phn2 = row['Missed_phn']
+    mcb_dur_col2 = row['MCB_dur']
+    nurse_id = row['NurseID']
+    ncb_col2 = row['NCB']
+
+    if pd.notnull(mcb_dur_col2):
+        combined_df1.at[i, 'NCB'] = np.nan
+#print(combined_df1[1:30])##Check used within the code to monitor output
+
+# app building
+# The code for importing and processing the DataFrame goes here as shown in your provided code
+# Create the Dash app
+app = dash.Dash(__name__)
+
+# Layout of the app
+app.layout = html.Div([
+html.H1('Call Analytics Dashboard'),
+    # Dropdown menu for NurseID
+    dcc.Dropdown(
+        id='nurse-dropdown',
+        options=[{'label': str(nurse), 'value': nurse} for nurse in combined_df1['NurseID'].unique()],
+        value=combined_df1['NurseID'].unique()[0]
+    ),
+
+    # Calendar for date selection
+    dcc.DatePickerRange(
+        id='date-picker',
+        start_date=combined_df1['Start Time'].min().date(),
+        end_date=combined_df1['End Time'].max().date(),
+        display_format='YYYY-MM-DD'
+    ),
+
+    # Bar graph for average callback duration
+    dcc.Graph(id='avg-callback-graph'),
+
+    # Bar graph for missed calls per nurse
+    dcc.Graph(id='missed-calls-graph'),
+
+    # Bar graph for max and min call duration per nurse
+    dcc.Graph(id='max-min-call-graph'),
+])
+
+
+# Callback to update graphs based on dropdown and date picker inputs
+@app.callback(
+    [
+        Output('avg-callback-graph', 'figure'),
+        Output('missed-calls-graph', 'figure'),
+        Output('max-min-call-graph', 'figure'),
+    ],
+    [
+        Input('nurse-dropdown', 'value'),
+        Input('date-picker', 'start_date'),
+        Input('date-picker', 'end_date'),
+    ]
+)
+def update_graphs(selected_nurse, start_date, end_date):
+    filtered_df = combined_df1[combined_df1['NurseID'] == selected_nurse]
+    filtered_df = filtered_df[(filtered_df['Start Time'] >= start_date) & (filtered_df['End Time'] <= end_date)]
+
+    # Average callback duration graph
+    avg_callback_fig = go.Figure()
+    avg_callback_fig.add_trace(go.Bar(
+        x=filtered_df['Start Time'],
+        y=filtered_df['Duration'],
+        name='Average Callback Duration in seconds,
+        marker_color='blue'
+    ))
+    avg_callback_fig.update_layout(title_text='Average Callback Duration', xaxis_title='Date', yaxis_title='Duration')
+
+    # Missed calls graph
+    missed_calls_fig = go.Figure()
+    missed_calls_fig.add_trace(go.Bar(
+        x=filtered_df['Start Time'],
+        y=filtered_df['NCB'],
+        name='Number of Missed Calls',
+        marker_color='red'
+    ))
+    missed_calls_fig.update_layout(title_text='Missed Calls per Nurse', xaxis_title='Date', yaxis_title='Missed Calls')
+
+    # Max and Min call duration graph
+    max_min_call_fig = go.Figure()
+    max_min_call_fig.add_trace(go.Bar(
+        x=filtered_df['Start Time'],
+        y=filtered_df['MCB_dur'],
+        name='Max Call Duration in seconds,
+        marker_color='green'
+    ))
+    max_min_call_fig.add_trace(go.Bar(
+        x=filtered_df['Start Time'],
+        y=filtered_df['Duration'],
+        name='Min Call Duration in seconds,
+        marker_color='orange'
+    ))
+    max_min_call_fig.update_layout(title_text='Max and Min Call Duration per Nurse', xaxis_title='Date',
+                                   yaxis_title='Duration')
+
+    return avg_callback_fig, missed_calls_fig, max_min_call_fig
+
+
+if __name__ == '__main__':
+    app.run_server(debug=True)
